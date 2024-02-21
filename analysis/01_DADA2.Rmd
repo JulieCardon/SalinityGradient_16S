@@ -69,6 +69,29 @@ random_samples
 plotQualityProfile(forward_reads[random_samples])
 plotQualityProfile(reverse_reads[random_samples])
 
+```
+
+# Filter and Trim reads
+
+#Prepare a placeholder for filtered reads
+```{r prep-filtered-sequences} 
+# vector of our samples, extract sample name from files
+samples <- sapply(strsplit(basename(forward_reads), "_"), `[`,1) 
+#Instuition Check
+head(samples)
+
+#Place filtered reads into filtered fastqs path
+filtered_fastqs_path <- "data/01_DADA2/02_filtered_fastqs"
+
+# create 2 variables: filtere_F, filtered_R
+
+filtered_forward_reads <- file.path(filtered_fastqs_path, paste0(samples, "_R1_filtered.fastq.gz"))
+
+filtered_reverse_reads <- file.path(filtered_fastqs_path, paste0(samples, "_R2_filtered.fastq.gz")) 
+
+
+
+
 
 ```
 
