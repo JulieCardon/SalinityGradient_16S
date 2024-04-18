@@ -1,0 +1,171 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+e: "Phylogenetic Tree"
+author: "Julie Cardon"
+date: "2024-02-21"
+output: html_document
+toc: yes
+toc_float:
+  collapsed: no
+  smooth_scroll: yes
+  toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", 
+                      fig.path = "../figures/03_Phylogenetic_Tree/") #send any figure output to this folder
+#only for the first chunk put ../ to get back to salinity gradient folder, 
+```
+
+# Goals of This File
+1. Load the fastree unrooted tree.
+2. Add tree to phyloseq object.
+3. Visualize and inspect tree with ggtree
+4. Prune ASVs , if needed.
+5. Root our tree.
+6. Combine new tree with a phyloseq object.
+7. Save 2 phyloseq objects- one will be an Unrooted tree phyloseq object, the second will be a rooted tree phylosep object.  If we want to use a dissimilarity metric that's taking into account phylogeny, we will need a rooted tree because we need to know the tree branch lengths.  It is very useful, we could calculate the phylogenetic hill numbers (look into).  We will also need the unifrac dissimilarity for that.
+ ## Set my seed
+```{r set-seed}
+# any number can be chosen (like b-day, or just hit random keys), use set.seed() from base R
+
+set.seed(238428)
+
+```
+ 
+ 
+ 
+ 
+ 
+# Load Libraries
+
+```{r load-libraries}
+pacman::p_load(tidyverse, phyloseq, ggtree, phytools, install=FALSE)
+```
+
+# Load Data Files
+
+```{r load-data}
+#Preprocessed phyloseq object it's in our data folder
+load("data/02_PreProcessing/raw_preprocessed_physeq.RData")
+raw_preprocessed_physeq
+```
+# Load in the tree, use the command from phytools read.tree
+
+```{r}
+unrooted_tree <- read.tree("data/03_Phylogenetic_Tree/ASVs_unrooted.tree")
+str(unrooted_tree)
+#edge length is the branch length
+
+# It is an S4 data object, so everything in the tree has to match everything in the phyloseq object
+```
+
+# Merge Phyloseq
+```{r merge-physeq}
+#Intuition Check
+stopifnot(ntaxa(raw_preprocessed_physeq)== ntaxa(unrooted_tree))
+
+#Merge the tree with thte phyloseq object
+unrooted_physeq<-
+  merge_phyloseq(raw_preprocessed_physeq, unrooted_tree) 
+unrooted_physeq
+```
+
+```{r plot-tree-unrooted}
+#Make a basic tree
+kingdom_node_tree <-ggtree(unrooted_physeq) + 
+  # color tips by kingdom
+  geom_tippoint(mapping= aes(color = Kingdom)) +
+  scale_color_manual(values = c("goldenrod1", "cornflowerblue", "grey")) +
+  #Add title, add information at the nodes
+  labs(title = "Unrooted Tree") +
+  geom_text(aes(label=node), hjust= -0.5, vjust = -0.3, size = 2)
+  theme(legend.position = "bottom") ; kingdom_node_tree
+
+```
+
+#There was one strange outlying branch, so let's evaluate it: We need to know where to zoom in to inspect the tree.  A reasonable hypothesis to make is where we have all of the NAs coming at the kingdom level, because the bases between those two groups could be harder to identify.  It takes a lot of manual code.
+
+```{r eval-long-branch}
+#View a specific clade
+#Zoom in on the original tree, and not the weird clade is 2537, so we'll use the command
+viewClade(kingdom_node_tree + labs(title = "Unrooted Tree: Node 2537") + geom_text(aes(label=ASV)), node = 2537)
+# Use NCBI BLAST to paste in your sequence and find out what it is.
+unrooted_physeq %>%
+  subset_taxa(., ASV == "ASV_456") %>%
+  tax_table() %>%
+  data.frame()
+
+# LEts also check the counts of the SV
+unrooted_physeq %>%
+  subset_taxa(., ASV == "ASV_456") %>%
+  otu_table() %>%
+  data.frame() %>%
+  colSums()
+```
+
+It turns out that was a mitochondrion (the way far outlier), a contaminant that we need to prune out thusly:
+```{r Prune ASV_456}
+#Subset Tree- Take a phyloseq object and subset out anything that doesn't 
+# Function from Joey McMurdie: https://github.com/joey711/phyloseq/issues/652 (include link where you found the code in your document)
+pop_taxa = function(physeq, badTaxa){
+  allTaxa <-  taxa_names(physeq)
+  allTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(allTaxa, physeq))}
+
+#Let's use the pop_taxa function-- We'll re-create a phyloseq object without ASV 456. 
+unrooted_physeq_rm456 <-unrooted_physeq %>%
+  pop_taxa(., "ASV_456")
+
+#Since phyloseq has pretty stringent things, we don't have to worry about the warning
+#Intuition Check
+ntaxa(unrooted_physeq) - ntaxa(unrooted_physeq_rm456)
+
+#visually check
+ggtree(unrooted_physeq_rm456) + geom_tippoint(mapping=aes(color= Kingdom))
+```
+
+THen we can make a rooted tree-- our unrooted tree has Archae in the middle of the tree, but they should be an out group.  We need to root because we're going to use a weighted unifrac to look at the beta diversity in our samples.
+
+# Midroot Tree
+(We could try to root with Archaea, midrooting is one of the most common ways of rooting the tree.  THen we'll export and do Betadiversity)
+
+```{r midroot-tree}
+# Is the tree rooted? Phyloseq likes to call the tree object phy_tree, so we'll use that 
+new_unrooted_tree <- phy_tree(unrooted_physeq_rm456)
+is.rooted(phy_tree(new_unrooted_tree))
+# get an output of false, so lett' midpoint root the tree using midpoint.root function in phytools package can be used to newly root or re-root a tree
+midpoint_rooted_tree<- midpoint.root(new_unrooted_tree)
+
+#Assign to a new phyloseq object: merging subsetted phyloseq with the new rooted tree 
+# 1. Create the phyloseq object wihout ASV_456
+physeq_rm456 <-raw_preprocessed_physeq %>%
+  subset_taxa(ASV != "ASV_456")
+
+#Merge tree with the new physeq_rm456
+midroot_physeq_rm456 <- merge_phyloseq(physeq_rm456, midpoint_rooted_tree)
+midroot_physeq_rm456
+
+#Quick inspection of tree (we always want to further confirm that it does have a root)
+ggtree(midroot_physeq_rm456) +
+  geom_tippoint(mapping= aes(color = Kingdom))
+```
+# We could do a similar approach, where we just root it within the Archea, we could remove all of the Archea, but we need this before calculating unifrac distances.  
+
+# Save to a new phyloseq object
+```{r save-physeq}
+save(list = c("unrooted_physeq_rm456", "midroot_physeq_rm456"), file = "data/03_Phylogenetic_Tree/phytree_preprocessed_physeq.RData")
+
+```
+
+#Session Information
+```{r}
+
+
+```
+
